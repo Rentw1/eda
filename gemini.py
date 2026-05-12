@@ -2,16 +2,23 @@ import httpx
 import base64
 import json
 import re
-from config import GEMINI_API_KEY
+import os
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash-lite:generateContent?key=" + GEMINI_API_KEY
-)
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-SYSTEM_PROMPT = """Ты — эксперт по питанию. Проанализируй фото еды и верни ТОЛЬКО JSON (без markdown, без ```).
+# Бесплатная модель с поддержкой картинок
+MODEL = "qwen/qwen2.5-vl-3b-instruct:free"
 
-Формат ответа:
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json",
+    "HTTP-Referer": "https://calorie-bot",
+}
+
+FOOD_PROMPT = """Ты — эксперт по питанию. Проанализируй фото еды и верни ТОЛЬКО JSON (без markdown, без ```).
+
+Формат:
 {
   "name": "название блюда на русском",
   "estimated_grams": 200,
@@ -19,56 +26,52 @@ SYSTEM_PROMPT = """Ты — эксперт по питанию. Проанали
   "protein_per_100g": 10.5,
   "fat_per_100g": 5.2,
   "carbs_per_100g": 20.1,
-  "confidence": "high|medium|low",
-  "note": "короткая заметка если нужна"
+  "confidence": "high",
+  "note": ""
 }
 
 Правила:
 - estimated_grams — твоя оценка порции на фото
-- все нутриенты на 100г продукта
-- если на фото несколько блюд — укажи самое калорийное/основное
-- confidence: high если блюдо чётко видно, low если сложно определить
-"""
+- все нутриенты на 100г
+- confidence: high если блюдо чётко видно, low если сложно"""
 
-async def analyze_food_photo(image_bytes: bytes) -> dict | None:
-    """Send photo to Gemini, return parsed nutrition dict or None on error."""
+
+def _parse(text: str) -> dict:
+    text = text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    return json.loads(text)
+
+
+async def analyze_food_photo(image_bytes: bytes) -> dict:
     image_b64 = base64.b64encode(image_bytes).decode()
 
     payload = {
-        "contents": [
+        "model": MODEL,
+        "messages": [
             {
-                "parts": [
-                    {"text": SYSTEM_PROMPT},
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": image_b64
-                        }
-                    }
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": FOOD_PROMPT},
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/jpeg;base64,{image_b64}"
+                    }}
                 ]
             }
         ],
-        "generationConfig": {
-            "temperature": 0.2,
-            "maxOutputTokens": 512
-        }
+        "max_tokens": 512,
+        "temperature": 0.2,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(GEMINI_URL, json=payload)
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(OPENROUTER_URL, json=payload, headers=HEADERS)
         resp.raise_for_status()
 
-    data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+    text = resp.json()["choices"][0]["message"]["content"]
+    return _parse(text)
 
-    # Strip possible markdown fences
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
 
-    return json.loads(text)
-
-async def analyze_food_text(description: str) -> dict | None:
-    """Analyze food by text description (e.g. '200г гречки с курицей')."""
+async def analyze_food_text(description: str) -> dict:
     prompt = f"""Ты — эксперт по питанию. Пользователь описал еду: "{description}"
 
 Верни ТОЛЬКО JSON (без markdown, без ```):
@@ -79,24 +82,22 @@ async def analyze_food_text(description: str) -> dict | None:
   "protein_per_100g": 10.5,
   "fat_per_100g": 5.2,
   "carbs_per_100g": 20.1,
-  "confidence": "high|medium|low",
+  "confidence": "high",
   "note": ""
 }}
 
 Если пользователь указал граммы — используй их в estimated_grams."""
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 512}
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 512,
+        "temperature": 0.2,
     }
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(GEMINI_URL, json=payload)
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(OPENROUTER_URL, json=payload, headers=HEADERS)
         resp.raise_for_status()
 
-    data = resp.json()
-    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-
-    return json.loads(text)
+    text = resp.json()["choices"][0]["message"]["content"]
+    return _parse(text)
