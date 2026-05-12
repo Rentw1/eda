@@ -6,7 +6,7 @@ from config import GEMINI_API_KEY
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent?key=" + GEMINI_API_KEY
+    "gemini-1.5-flash:generateContent?key=" + GEMINI_API_KEY
 )
 
 SYSTEM_PROMPT = """Ты — эксперт по питанию. Проанализируй фото еды и верни ТОЛЬКО JSON (без markdown, без ```).
